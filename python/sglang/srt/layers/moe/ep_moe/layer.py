@@ -26,7 +26,7 @@ from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.fp8_kernel import is_fp8_fnuz
 from sglang.srt.layers.quantization.w4afp8 import W4AFp8Config, W4AFp8MoEMethod
-from sglang.srt.utils import get_bool_env_var, is_hip, is_npu
+from sglang.srt.utils import get_bool_env_var, is_hip, is_npu, is_xpu
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 _is_hip = is_hip()
 _is_npu = is_npu()
+_is_xpu = is_xpu()
 _is_fp8_fnuz = is_fp8_fnuz()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 
@@ -113,6 +114,10 @@ class DeepEPMoE(FusedMoE):
                 deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
             ), "Unquantized DeepEP low-latency MoE requires DeepGEMM BF16"
             self.deprecate_flag = True
+        elif _is_xpu:
+            # XPU has no DeepGEMM path; route through the parent class
+            # run_moe_core (triton fused-MoE runner).
+            self.deprecate_flag = True
         else:
             self.deprecate_flag = False
 
@@ -138,9 +143,10 @@ class DeepEPMoE(FusedMoE):
             self.deepep_mode.enable_low_latency()
             and not _is_npu
             and not _is_hip
+            and not _is_xpu
             and quant_config is not None
         ):
-            # AMD HIP and NPU support low_latency DeepEP without DeepGEMM.
+            # AMD HIP, NPU and XPU support low_latency DeepEP without DeepGEMM.
             assert (
                 deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
             ), f"DeepEP {self.deepep_mode} mode requires deep_gemm"

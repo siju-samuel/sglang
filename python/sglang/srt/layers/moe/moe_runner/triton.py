@@ -16,6 +16,7 @@ from sglang.srt.layers.moe.moe_runner.base import (
     register_pre_permute,
 )
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
+from sglang.srt.utils import is_xpu
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher.standard import (
@@ -245,3 +246,10 @@ def post_permute_triton_to_standard(
     return StandardCombineInput(
         hidden_states=runner_output.hidden_states,
     )
+
+
+# Register the XPU-only (deepep_*, triton) permute adapters.  Imported for its
+# @register_* side effects; kept in a separate module so this shared triton
+# runner stays free of XPU-specific DeepEP glue.
+if is_xpu():
+    from sglang.srt.layers.moe.moe_runner import triton_xpu  # noqa: F401

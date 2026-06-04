@@ -32,10 +32,12 @@ from sglang.srt.utils import (
     is_blackwell,
     is_hip,
     is_npu,
+    is_xpu,
     load_json_config,
 )
 
 _is_npu = is_npu()
+_is_xpu = is_xpu()
 
 if TYPE_CHECKING:
     from sglang.srt.batch_overlap.single_batch_overlap import CombineOverlapArgs
@@ -217,7 +219,7 @@ class DeepEPBuffer:
         else:
             raise NotImplementedError
 
-        if not _is_npu:
+        if not _is_npu and not _is_xpu:
             total_num_sms = torch.cuda.get_device_properties(
                 device="cuda"
             ).multi_processor_count
@@ -569,7 +571,12 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
         topk_weights: torch.Tensor,
     ):
 
-        if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM or _use_aiter or _is_npu:
+        if (
+            deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
+            or _use_aiter
+            or _is_npu
+            or _is_xpu
+        ):
             output = hidden_states
         else:
             raise NotImplementedError()  # triton runner was supported but it's temporarily disabled
