@@ -378,9 +378,10 @@ The Python engine API (`engine.release_memory_occupation(tags=...)` /
 behave the same as on CUDA. Pauseable CUDA-graph capture is not used on XPU, so
 the `cuda_graph` tag is a no-op there.
 
-> **Verifying memory was freed:** `torch.xpu.memory_allocated()` reflects the
-> allocator's accounting and does **not** drop when physical pages are released.
-> Query actual device memory via sysman (`ZES_ENABLE_SYSMAN=1`) instead.
+> **Verifying memory was freed:** neither `torch.xpu.memory_allocated()` nor
+> `torch.xpu.mem_get_info()` drops when physical pages are released — the first is
+> allocator accounting, and the second stays flat because torch keeps the freed block
+> cached. Query actual device memory via sysman (`ZES_ENABLE_SYSMAN=1`) instead.
 
 ## Prefill-Decode (P/D) Disaggregation on Intel XPU [Experimental]
 

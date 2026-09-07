@@ -21,6 +21,8 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
+_warned_xpu_cuda_graph = False
+
 
 class TorchMemorySaverAdapter(ABC):
     @staticmethod
@@ -82,16 +84,16 @@ class TorchMemorySaverAdapter(ABC):
 class _TorchMemorySaverAdapterReal(TorchMemorySaverAdapter):
     """Adapter for TorchMemorySaver with tag-based control.
 
-    Backed by the upstream torch_memory_saver package (CUDA VMM, and Intel XPU
-    via Level Zero). On XPU the package uses an in-process pluggable allocator
-    (hook_mode="torch") rather than the CUDA LD_PRELOAD path, so
-    configure_subprocess() (nothing to preload) and cuda_graph() (no pauseable
-    graph-capture path) are no-ops there.
+    Backed by the upstream torch_memory_saver package (CUDA VMM, and Intel XPU via
+    Level Zero). XPU requires the in-process pluggable allocator (hook_mode="torch")
+    instead of the CUDA LD_PRELOAD path, which is what makes configure_subprocess()
+    and cuda_graph() no-ops there; region/pause/resume are fully supported.
     """
 
     def configure_subprocess(self):
         if is_xpu():
-            # XPU uses an in-process pluggable allocator; nothing to preload.
+            # Nothing to preload: this LD_PRELOADs the preload-mode .so, which the
+            # upstream setup.py does not build for XPU.
             return self._noop_context()
         return torch_memory_saver.configure_subprocess()
 
@@ -100,7 +102,19 @@ class _TorchMemorySaverAdapterReal(TorchMemorySaverAdapter):
 
     def cuda_graph(self, **kwargs):
         if is_xpu():
-            # XPU does not support the memory-saver pauseable graph-capture path.
+            # Upstream gates pauseable graph capture on hook_mode="preload" while XPU
+            # requires hook_mode="torch", so the two are mutually exclusive. Unreachable
+            # today (XPU routes to FullXPUGraphBackend, which takes no memory saver);
+            # warn rather than raise, so a future XPU graph backend that does route here
+            # surfaces that graph memory is not pauseable instead of failing to launch.
+            global _warned_xpu_cuda_graph
+            if not _warned_xpu_cuda_graph:
+                _warned_xpu_cuda_graph = True
+                logger.warning(
+                    "torch_memory_saver cannot make CUDA-graph memory pauseable on Intel "
+                    "XPU; graph allocations will not be released by "
+                    "release_memory_occupation(tags=['cuda_graph'])."
+                )
             return self._noop_context()
         return _memory_saver.cuda_graph(**kwargs)
 
