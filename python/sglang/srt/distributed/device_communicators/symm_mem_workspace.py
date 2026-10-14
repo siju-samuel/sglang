@@ -7,7 +7,7 @@ writer and the reader have both passed a :meth:`SymmMemWorkspace.barrier`.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Sequence
 
 import torch
 import torch.distributed as dist
@@ -25,6 +25,9 @@ try:
 except ImportError as e:  # pragma: no cover
     torch_symm_mem = None
     _import_error = e
+
+# Backends whose rendezvous maps every peer's buffer into this process.
+_PEER_MAPPED_BACKENDS = ("CUDA", "XPU")
 
 
 def all_ranks_agree(ok: bool, group: ProcessGroup) -> bool:
@@ -83,12 +86,14 @@ class SymmMemWorkspace:
             )
             return None
         backend = torch_symm_mem.get_backend(device)
-        if backend != "XPU":
+        if backend not in _PEER_MAPPED_BACKENDS:
             logger.warning(
-                "%s: symmetric-memory backend for %s is %s, expected 'XPU'; disabled.",
+                "%s: symmetric-memory backend for %s is %s, expected one of %s; "
+                "disabled.",
                 owner,
                 device,
                 backend,
+                _PEER_MAPPED_BACKENDS,
             )
             return None
         world_size = dist.get_world_size(group)
@@ -121,6 +126,20 @@ class SymmMemWorkspace:
             )
             return None
         return cls(buffer=buffer, handle=handle, group=group, device=device)
+
+    def peer_view(
+        self,
+        rank: int,
+        *,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        byte_offset: int = 0,
+    ) -> torch.Tensor:
+        """A tensor over ``rank``'s buffer, starting ``byte_offset`` bytes in."""
+        assert byte_offset % dtype.itemsize == 0, (byte_offset, dtype)
+        return self.handle.get_buffer(
+            rank, list(shape), dtype, byte_offset // dtype.itemsize
+        )
 
     def barrier(self) -> None:
         """Stream-ordered: work queued before it on any rank is visible after it."""
