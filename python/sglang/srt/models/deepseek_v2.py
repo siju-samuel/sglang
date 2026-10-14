@@ -1353,13 +1353,7 @@ class DeepseekV2MoE(nn.Module):
                 hidden_states,
                 topk_output,
             )
-        if (
-            not _is_cuda
-            and not _is_musa
-            and not _is_xpu
-            and not _use_aiter
-            or isinstance(self.experts.quant_method, KTEPWrapperMethod)
-        ):
+        if self._model_applies_routed_scaling():
             # fused in biased_grouped_topk so we can skip here
             final_hidden_states *= self.routed_scaling_factor
 
@@ -1679,22 +1673,37 @@ class DeepseekV2MoE(nn.Module):
         ):
             torch.cuda.current_stream().wait_event(shared_event)
 
+        routed_output_is_scaled = (
+            self.experts.should_fuse_routed_scaling_factor_in_topk
+            or _use_aiter
+            # symm_mem runs the experts through the same MoE runner as
+            # forward_normal, which scales the output where the model does not.
+            or (
+                get_moe_a2a_backend().is_symm_mem()
+                and not self._model_applies_routed_scaling()
+            )
+        )
         if shared_output is not None:
             x = shared_output
             # aiter moe call will handle routed_scaling_factor in the function
             # so add _use_aiter condition to eliminate to use self.routed_scaling_factor in add_ call
-            if self.experts.should_fuse_routed_scaling_factor_in_topk or _use_aiter:
+            if routed_output_is_scaled:
                 x.add_(final_hidden_states)
             else:
                 x.add_(final_hidden_states, alpha=self.routed_scaling_factor)
             final_hidden_states = x
         else:
-            if not (
-                self.experts.should_fuse_routed_scaling_factor_in_topk or _use_aiter
-            ):
+            if not routed_output_is_scaled:
                 final_hidden_states *= self.routed_scaling_factor
 
         return final_hidden_states
+
+    def _model_applies_routed_scaling(self) -> bool:
+        """Whether the plain MoE path scales the routed output in the model;
+        on the other platforms the MoE runner already applied the factor."""
+        return (
+            not _is_cuda and not _is_musa and not _is_xpu and not _use_aiter
+        ) or isinstance(self.experts.quant_method, KTEPWrapperMethod)
 
     def _forward_shared_experts(
         self,
