@@ -201,7 +201,7 @@ del _mod, _fn
 # Pack / unpack / combine steps of the symmetric-memory all-to-all; plain Triton,
 # validated on Intel XPU.
 for _fn in (
-    "symm_mem_a2a_publish_counts",
+    "symm_mem_a2a_route",
     "symm_mem_a2a_pack",
     "symm_mem_a2a_unpack",
     "symm_mem_a2a_combine_round",

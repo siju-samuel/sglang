@@ -26,7 +26,7 @@ import torch
 from sglang.kernels.ops.moe.symm_mem_a2a import (
     symm_mem_a2a_combine_round,
     symm_mem_a2a_pack,
-    symm_mem_a2a_publish_counts,
+    symm_mem_a2a_route,
     symm_mem_a2a_unpack,
 )
 from sglang.srt.distributed.device_communicators.symm_mem_workspace import (
@@ -153,7 +153,6 @@ class _SymmMemA2AState:
         device = workspace.device
         self.send_hidden = torch.empty(hidden_shape, dtype=layout.dtype, device=device)
         self.send_meta = torch.empty(meta_shape, dtype=torch.int32, device=device)
-        self.ranks = torch.arange(world_size, dtype=torch.int32, device=device)
 
 
 def _get_or_create_state(
@@ -246,8 +245,7 @@ class SymmMemDispatcher(BaseDispatcher):
         assert hidden_states.shape[1] == self.hidden_size
         assert hidden_states.dtype == state.layout.dtype
 
-        slot, send_counts = self._route(topk_output.topk_ids)
-        counts_dev, counts = self._exchange_counts(send_counts)
+        slot, counts_dev, counts = self._route(topk_output.topk_ids)
         num_rounds = math.ceil(max(max(row) for row in counts) / self.round_tokens)
 
         recv_rows = sum(counts[src][self.rank] for src in range(self.world_size))
@@ -364,34 +362,31 @@ class SymmMemDispatcher(BaseDispatcher):
                 state.workspace.barrier()
         return out
 
-    def _route(self, topk_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Each token's row in the block it sends each rank, and the block sizes."""
-        dst_rank = torch.where(
-            topk_ids >= 0,
-            torch.div(topk_ids, self.num_local_experts, rounding_mode="floor"),
-            -1,
-        )
-        sends = (dst_rank.unsqueeze(-1) == self._state.ranks).any(dim=1)
-        rows = sends.to(torch.int32).cumsum(dim=0, dtype=torch.int32) - 1
-        slot = torch.where(sends, rows, -1).to(torch.int32).contiguous()
-        return slot, sends.sum(dim=0, dtype=torch.int32)
-
-    def _exchange_counts(
-        self, send_counts: torch.Tensor
-    ) -> Tuple[torch.Tensor, List[List[int]]]:
+    def _route(
+        self, topk_ids: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[List[int]]]:
+        """Each token's row in the block it sends each rank, and the exchanged
+        counts on the device and the host."""
         state = self._state
         # Alternate matrices: a peer that finishes this layer with no rows to
         # move can publish the next one before this rank has read these counts.
         parity = state.counts_parity
         state.counts_parity ^= 1
-        symm_mem_a2a_publish_counts(
-            send_counts=send_counts,
-            peer_ptrs=state.counts_peer_ptrs[parity],
+        slot = torch.empty(
+            (topk_ids.shape[0], self.world_size),
+            dtype=torch.int32,
+            device=topk_ids.device,
+        )
+        symm_mem_a2a_route(
+            topk_ids=topk_ids,
+            slot=slot,
+            peer_counts_ptrs=state.counts_peer_ptrs[parity],
             rank=self.rank,
+            num_local_experts=self.num_local_experts,
         )
         state.workspace.barrier()
         counts_dev = state.counts[parity]
-        return counts_dev, counts_dev.tolist()
+        return slot, counts_dev, counts_dev.tolist()
 
     def _rotation(self):
         """Peers in send order: one peer per step keeps receivers from contending."""

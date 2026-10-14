@@ -3,7 +3,8 @@
 Layouts shared with ``sglang.srt.layers.moe.token_dispatcher.symm_mem``:
 
 - ``slot``: [num_tokens, world_size] int32, a token's row in the block it sends
-  to each rank, or -1 when no top-k expert of the token lives there.
+  to each rank, or -1 when no top-k expert of the token lives there. Rows
+  follow token order.
 - ``counts``: [world_size, world_size] int32, ``counts[src, dst]`` rows sent.
 - Staging: [world_size, round_tokens, ...], indexed by the peer rank; one round
   moves rows ``[round_start, round_start + round_tokens)`` of every block.
@@ -21,39 +22,76 @@ _BLOCK_H = 1024
 
 
 @triton.jit
-def _publish_counts_kernel(
-    send_counts_ptr,
-    peer_ptrs,
+def _route_kernel(
+    topk_ids_ptr,
+    slot_ptr,
+    peer_counts_ptrs,
     rank,
+    num_tokens,
+    num_local_experts,
     WORLD_SIZE: tl.constexpr,
-    BLOCK: tl.constexpr,
+    TOPK: tl.constexpr,
+    BLOCK_T: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    BLOCK_W: tl.constexpr,
 ):
-    peer = tl.program_id(0)
-    offs = tl.arange(0, BLOCK)
-    mask = offs < WORLD_SIZE
-    peer_counts = tl.load(peer_ptrs + peer).to(tl.pointer_type(tl.int32))
-    tl.store(
-        peer_counts + rank * WORLD_SIZE + offs,
-        tl.load(send_counts_ptr + offs, mask=mask),
-        mask=mask,
-    )
+    # One program walks the tokens in order, so each block's rows are dense.
+    w_offs = tl.arange(0, BLOCK_W)
+    w_mask = w_offs < WORLD_SIZE
+    k_offs = tl.arange(0, BLOCK_K)
+    rows_sent = tl.zeros([BLOCK_W], dtype=tl.int32)
+    for start in range(0, num_tokens, BLOCK_T):
+        t_offs = start + tl.arange(0, BLOCK_T)
+        t_mask = t_offs < num_tokens
+        ids = tl.load(
+            topk_ids_ptr + t_offs[:, None] * TOPK + k_offs[None, :],
+            mask=t_mask[:, None] & (k_offs[None, :] < TOPK),
+            other=-1,
+        ).to(tl.int32)
+        owner = tl.where(ids >= 0, ids // num_local_experts, -1)
+        sends = tl.max(
+            (owner[:, :, None] == w_offs[None, None, :]).to(tl.int32), axis=1
+        )
+        sends = tl.where(t_mask[:, None] & w_mask[None, :], sends, 0)
+        rows = tl.cumsum(sends, axis=0) - 1 + rows_sent[None, :]
+        tl.store(
+            slot_ptr + t_offs[:, None] * WORLD_SIZE + w_offs[None, :],
+            tl.where(sends > 0, rows, -1),
+            mask=t_mask[:, None] & w_mask[None, :],
+        )
+        rows_sent += tl.sum(sends, axis=0)
+    for peer in tl.static_range(WORLD_SIZE):
+        peer_counts = tl.load(peer_counts_ptrs + peer).to(tl.pointer_type(tl.int32))
+        tl.store(peer_counts + rank * WORLD_SIZE + w_offs, rows_sent, mask=w_mask)
 
 
-def symm_mem_a2a_publish_counts(
-    *, send_counts: torch.Tensor, peer_ptrs: torch.Tensor, rank: int
+def symm_mem_a2a_route(
+    *,
+    topk_ids: torch.Tensor,
+    slot: torch.Tensor,
+    peer_counts_ptrs: torch.Tensor,
+    rank: int,
+    num_local_experts: int,
 ) -> None:
-    """Write this rank's ``send_counts`` row into ``counts[rank]`` on every rank.
+    """Fill ``slot`` and write this rank's row of ``counts`` on every rank.
 
-    ``peer_ptrs`` holds each rank's counts base address (int64, see
+    ``peer_counts_ptrs`` holds each rank's counts base address (int64, see
     ``SymmMemWorkspace.peer_ptrs``); the caller barriers before reading.
     """
-    world_size = send_counts.numel()
-    _publish_counts_kernel[(world_size,)](
-        send_counts,
-        peer_ptrs,
+    num_tokens, topk = topk_ids.shape
+    world_size = slot.shape[1]
+    _route_kernel[(1,)](
+        topk_ids,
+        slot,
+        peer_counts_ptrs,
         rank,
+        num_tokens,
+        num_local_experts,
         WORLD_SIZE=world_size,
-        BLOCK=triton.next_power_of_2(world_size),
+        TOPK=topk,
+        BLOCK_T=128,
+        BLOCK_K=triton.next_power_of_2(topk),
+        BLOCK_W=triton.next_power_of_2(world_size),
     )
 
 

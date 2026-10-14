@@ -8,12 +8,14 @@ contract is checked without symmetric memory.
 import math
 import sys
 
+import numpy as np
 import pytest
 import torch
 
 from sglang.kernels.ops.moe.symm_mem_a2a import (
     symm_mem_a2a_combine_round,
     symm_mem_a2a_pack,
+    symm_mem_a2a_route,
     symm_mem_a2a_unpack,
 )
 from sglang.srt.utils import get_device, is_cuda, is_xpu
@@ -61,6 +63,7 @@ def _make_rank_inputs(
         (2, [7, 5], 256, 64),  # one round
         (4, [9, 0, 13, 4], 320, 3),  # many rounds, an idle rank, a masked hidden tail
         (8, [6, 1, 2, 3, 4, 5, 6, 7], 2304, 2),  # several hidden blocks
+        (2, [300, 7], 256, 64),  # routing carries row counts across token blocks
     ],
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -87,6 +90,27 @@ def test_dispatch_and_combine_round_trip(
     ]
     counts = torch.stack([r[4] for r in ranks])  # [src, dst]
     counts_list = counts.tolist()
+
+    # Routing: every simulated rank publishes its row into all ranks' matrices.
+    published = [
+        torch.full((world_size, world_size), -7, dtype=torch.int32, device=device)
+        for _ in range(world_size)
+    ]
+    peer_counts_ptrs = torch.from_numpy(
+        np.array([m.data_ptr() for m in published], dtype=np.uint64).view(np.int64)
+    ).to(device)
+    for src, (_, ids, _, ref_slot, _) in enumerate(ranks):
+        slot = torch.empty_like(ref_slot)
+        symm_mem_a2a_route(
+            topk_ids=ids,
+            slot=slot,
+            peer_counts_ptrs=peer_counts_ptrs,
+            rank=src,
+            num_local_experts=num_local_experts,
+        )
+        torch.testing.assert_close(slot, ref_slot, atol=0, rtol=0)
+    for matrix in published:
+        torch.testing.assert_close(matrix, counts, atol=0, rtol=0)
     num_rounds = math.ceil(counts.max().item() / round_tokens)
 
     def send_rows(src, dst, round_start):
