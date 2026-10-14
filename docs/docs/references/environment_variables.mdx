@@ -1050,6 +1050,11 @@ SGLang supports various environment variables that can be used to configure its 
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>`false`</td>
     </tr>
 <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_SYMM_MEM_A2A_NUM_MAX_DISPATCH_TOKENS_PER_ROUND</code></td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Rows one rank sends one peer per round of <code>--moe-a2a-backend symm_mem</code>; sizes its symmetric staging buffers. Larger batches take more rounds.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>`512`</td>
+    </tr>
+<tr>
       <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}><code>SGLANG_KERNEL_API_LOGLEVEL</code></td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Controls crash-debug kernel API logging. <code>0</code> disables logging, <code>1</code> logs API names, <code>3</code> logs tensor metadata, <code>5</code> adds tensor statistics, and <code>10</code> also writes pre-call dump snapshots.</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}><code>0</code></td>

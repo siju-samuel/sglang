@@ -1540,6 +1540,10 @@ def _a2a_fusion_adjustments(view: Any) -> dict:
     if view.moe_a2a_backend == "deepep_v2":
         # Fused shared experts are not validated with DeepEP v2.
         return {"disable_shared_experts_fusion": True}
+    if view.moe_a2a_backend == "symm_mem":
+        # Fused shared experts sit on every rank, but this dispatcher sends an
+        # expert id only to rank id // num_local_experts.
+        return {"disable_shared_experts_fusion": True}
     return {}
 
 
@@ -1557,6 +1561,7 @@ _A2A_EP_SPANNING_BACKENDS = frozenset(
         "mori",
         "pplx",
         "deepep_v2",
+        "symm_mem",
     }
 )
 

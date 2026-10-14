@@ -198,6 +198,23 @@ for _mod, _fn in _PHASE25_TRITON_KERNELS:
     )
 del _mod, _fn
 
+# Pack / unpack / combine steps of the symmetric-memory all-to-all; plain Triton,
+# validated on Intel XPU.
+for _fn in (
+    "symm_mem_a2a_publish_counts",
+    "symm_mem_a2a_pack",
+    "symm_mem_a2a_unpack",
+    "symm_mem_a2a_combine_round",
+):
+    register_kernel(
+        KernelSpec(
+            op=f"moe.{_fn}",
+            backend=KernelBackend.TRITON,
+            target=f"sglang.kernels.ops.moe.symm_mem_a2a:{_fn}",
+        )
+    )
+del _fn
+
 # Single-CTA align for tiny batches: covers the corner the AOT/JIT
 # moe_align_block_size small-batch path leaves out (num_experts > 64), and is
 # selected by the moe_runner call site on numel <= SMALL_NUMEL_LIMIT.

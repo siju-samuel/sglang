@@ -235,6 +235,7 @@ class NemotronHMoE(nn.Module):
                     dict(parallel_group="replicated")
                     if get_moe_a2a_backend().is_deepep()
                     or get_moe_a2a_backend().is_flashinfer()
+                    or get_moe_a2a_backend().is_symm_mem()
                     or get_moe_a2a_backend().is_flashinfer_megamoe()
                     else {}
                 ),

@@ -785,9 +785,11 @@ class ExecMoe(msgspec.Struct):
             "ascend_tp",
             "pplx",
             "flashinfer_megamoe",
+            "symm_mem",
         ],
         Arg(
-            help="Choose the backend for MoE A2A.",
+            help="Choose the backend for MoE A2A. `symm_mem` moves tokens through "
+            "torch symmetric memory on a single node and needs no extra package.",
             choices=[
                 "none",
                 "deepep",
@@ -801,6 +803,7 @@ class ExecMoe(msgspec.Struct):
                 "pplx",
                 "ascend_tp",
                 "flashinfer_megamoe",
+                "symm_mem",
             ],
             resolvable=True,
         ),

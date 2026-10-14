@@ -1874,6 +1874,9 @@ class Envs:
     # one-shot all-reduce; larger payloads fall back to the default collective.
     # Tunable because the crossover depends on peer bandwidth (Xe Link vs PCIe).
     SGLANG_XPU_SYMM_MEM_MAX_BYTES = EnvInt(512 * 1024)
+    # Rows one rank sends one peer per round of --moe-a2a-backend symm_mem; sizes
+    # its staging buffers. Arbitrary; larger batches take more rounds.
+    SGLANG_SYMM_MEM_A2A_NUM_MAX_DISPATCH_TOKENS_PER_ROUND = EnvInt(512)
 
     # Qwen3.5 and GDN
     SGLANG_ENABLE_GDN_DECODE_FUSED_PROJ_CONV = EnvBool(True)

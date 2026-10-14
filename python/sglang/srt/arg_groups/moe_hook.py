@@ -544,6 +544,40 @@ def handle_a2a_moe(server_args: Any):
                 "(chunked_prefill_size, or the decode cuda-graph batch size)"
             )
 
+    if a2a_now == "symm_mem":
+        _handle_symm_mem_a2a(server_args, cfg)
+
+
+def _handle_symm_mem_a2a(server_args: Any, cfg: Any) -> None:
+    # The dispatch output carries local top-k ids with -1 for remote experts,
+    # which the Triton runner honors and sgl-kernel-xpu's fused_experts does not.
+    runner = resolved_view(server_args).moe_runner_backend
+    if runner == "auto":
+        declare_resolution(server_args, "_handle_a2a_moe", moe_runner_backend="triton")
+    elif runner != "triton":
+        raise ValueError(
+            "--moe-a2a-backend symm_mem currently requires --moe-runner-backend "
+            "triton (or auto)."
+        )
+    if cfg.enable_two_batch_overlap or cfg.enable_single_batch_overlap:
+        raise ValueError(
+            "--moe-a2a-backend symm_mem does not support two-batch or "
+            "single-batch overlap yet."
+        )
+    if cfg.deepep_mode != "auto":
+        logger.warning("--deepep-mode is ignored for symm_mem MoE A2A")
+    # Every dispatch reads the exchanged token counts on the host to size its
+    # output, which a graph replay cannot do.
+    logger.warning("Cuda graph is disabled because moe_a2a_backend=`symm_mem`")
+    for phase in (Phase.DECODE, Phase.PREFILL):
+        declare_resolution(
+            server_args,
+            "_handle_a2a_moe",
+            cuda_graph_config=with_phase(
+                cfg.cuda_graph_config, phase, backend=Backend.DISABLED
+            ),
+        )
+
 
 def validate_deepep_v2_speculative_draft(server_args: Any) -> None:
     """Reject an explicit or inherited DeepEP v2 draft backend."""

@@ -45,6 +45,7 @@ class MoeA2ABackend(Enum):
     DEEPEP_V2 = "deepep_v2"
     PPLX = "pplx"
     FLASHINFER_MEGAMOE = "flashinfer_megamoe"
+    SYMM_MEM = "symm_mem"
     CUSTOMIZED = "customized"
 
     @classmethod
@@ -94,6 +95,9 @@ class MoeA2ABackend(Enum):
 
     def is_flashinfer_megamoe(self):
         return self == MoeA2ABackend.FLASHINFER_MEGAMOE
+
+    def is_symm_mem(self):
+        return self == MoeA2ABackend.SYMM_MEM
 
     def is_customized(self):
         return self == MoeA2ABackend.CUSTOMIZED
@@ -800,9 +804,14 @@ def post_experts_output_is_complete(*, is_tp_path: bool) -> bool:
         # hang the collective.
         return True
     a2a = get_moe_a2a_backend()
-    # The flashinfer and pplx combines, and the megamoe kernel's internal
-    # combine, sum each token's expert outputs back to its source rank.
-    return a2a.is_flashinfer() or a2a.is_pplx() or a2a.is_flashinfer_megamoe()
+    # The flashinfer, pplx and symm_mem combines, and the megamoe kernel's
+    # internal combine, sum each token's expert outputs back to its source rank.
+    return (
+        a2a.is_flashinfer()
+        or a2a.is_pplx()
+        or a2a.is_flashinfer_megamoe()
+        or a2a.is_symm_mem()
+    )
 
 
 def should_skip_post_experts_all_reduce(*, is_tp_path: bool) -> bool:

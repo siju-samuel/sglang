@@ -215,6 +215,18 @@ def create_moe_dispatcher(
                 else 128
             ),
         )
+    elif a2a_backend.is_symm_mem():
+        # Lazy: the dispatcher pulls in its Triton kernels.
+        from sglang.srt.layers.moe.token_dispatcher.symm_mem import SymmMemDispatcher
+
+        return SymmMemDispatcher(
+            group=get_parallel().moe_ep_group,
+            router_topk=moe_runner_config.top_k,
+            num_experts=moe_runner_config.num_experts,
+            num_local_experts=moe_runner_config.num_local_experts,
+            hidden_size=moe_runner_config.hidden_size,
+            params_dtype=moe_runner_config.params_dtype,
+        )
     elif a2a_backend.is_flashinfer():
         return FlashinferDispatcher(
             group=get_parallel().tp_group.device_group,

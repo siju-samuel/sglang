@@ -26,7 +26,7 @@ MODELS_DIR = Path(sglang.__file__).resolve().parent / "srt" / "models"
 
 
 def a2a(name=None):
-    names = ("flashinfer", "pplx", "flashinfer_megamoe")
+    names = ("flashinfer", "pplx", "flashinfer_megamoe", "symm_mem")
     return types.SimpleNamespace(
         **{f"is_{n}": (lambda n=n: n == name) for n in names},
         is_none=lambda: name is None,
@@ -102,6 +102,7 @@ class TestReduceMoeOutput(CustomTestCase):
             {"backend": "flashinfer"},
             {"backend": "pplx"},
             {"backend": "flashinfer_megamoe"},
+            {"backend": "symm_mem"},
             {"dwdp_size": 2},
             {"fp4_allgather": True},
         ):
