@@ -458,6 +458,8 @@ class _RecordingGlue(mod.MetadataGlueGraph):
 
     def __init__(self, captured_keys=()):
         super().__init__("cpu")
+        # "cpu" stands in for a CUDA device here, where the glue is on
+        self.disabled = False
         self.captured_keys = set(captured_keys)
         self.calls = []
 

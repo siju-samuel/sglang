@@ -46,7 +46,8 @@ class MetadataGlueGraph:
 
     def __init__(self, device):
         self.device = device
-        self.disabled = False
+        # The capture uses torch.cuda.CUDAGraph; on other devices the prep runs eagerly.
+        self.disabled = torch.device(device).type != "cuda"
         # Since the first warm-up: prep steps served by a graph replay, and steps
         # that ran eagerly after it (capture failure, disabled, or never routed here).
         self.replays = 0
