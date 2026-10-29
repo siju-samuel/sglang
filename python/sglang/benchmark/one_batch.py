@@ -92,6 +92,7 @@ from sglang.srt.model_executor.cuda_graph_config import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.plugins import load_plugins
 from sglang.srt.runtime_context import (
     SpawnRanks,
     get_device,
@@ -122,6 +123,8 @@ def _init_process_global_configs() -> None:
     The Mamba SSU backend is not here: `load_model` installs it for the models
     that have one.
     """
+    # a spawned rank starts without the general plugins the parent loaded
+    load_plugins()
     initialize_moe_config()
     initialize_fp8_gemm_config()
     initialize_bf16_gemm_config()
@@ -1039,6 +1042,8 @@ def main(server_args, bench_args):
     declare_resolution(
         server_args, "benchmark.one_batch", cuda_graph_config=graph_config
     )
+    # resolution checks plugin-backed flags (e.g. --enable-intel-gigakernel)
+    load_plugins()
     server_args.resolve_once()
     cfg = resolving_view(server_args)
 

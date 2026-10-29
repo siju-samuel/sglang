@@ -156,6 +156,7 @@ code is split at the kernel/runtime boundary:
 | --- | --- | --- |
 | `nvidia/` | `--enable-nvidia-megakernel` | [sgl-nvidia-mega](https://github.com/sgl-project/sgl-nvidia-mega) |
 | `amd/` | `--enable-amd-monokernel` | [sgl-amd-mono](https://github.com/sgl-project/sgl-amd-mono) |
+| `intel/` | `--enable-intel-gigakernel` | [sgl-intel-giga](https://github.com/sgl-project/sgl-intel-giga) |
 
 An operator exposed from here registers into its logical group with
 `KernelSpec(op="<group>.<name>", backend=KernelBackend.PLUGIN, target="sglang.kernels.plugin_kernels.<hardware>.<model>.<mod>:<fn>")`;

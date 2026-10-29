@@ -46,7 +46,7 @@ logical grouping and remove the old `_jit_` filename prefix.
   reorganize those directories.
 - External kernel libraries that load as SGLang plugins and replace a model's
   step (sgl-nvidia-mega behind `--enable-nvidia-megakernel`, sgl-amd-mono behind
-  `--enable-amd-monokernel`) are split at the kernel/runtime boundary. Their
+  `--enable-amd-monokernel`, sgl-intel-giga behind `--enable-intel-gigakernel`) are split at the kernel/runtime boundary. Their
   contracts (spec, registration, capability declarations, thin kernel wrappers)
   live in `kernels/plugin_kernels/<hardware>/<model>/` (`KernelBackend.PLUGIN`)
   and import nothing from `srt`. SGLang's integration (config checks, weight

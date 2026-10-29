@@ -80,6 +80,7 @@ from sglang.srt.eplb.expert_location_updater import ExpertLocationUpdater
 from sglang.srt.kernel_plugins.amd.binding import (
     install_monokernel_forward,
 )
+from sglang.srt.kernel_plugins.intel.binding import install_gigakernel
 from sglang.srt.kernel_plugins.nvidia.binding import install_megakernel
 from sglang.srt.kv_canary.api import install_canary
 from sglang.srt.kv_canary.runner.canary_manager import context_tuple
@@ -735,6 +736,12 @@ class ModelRunner:
         self.configure_kv_cache_dtype()
         # after every post-load change to the model, before the KV cache is sized
         install_megakernel(
+            model=self.model,
+            hf_config=self.model_config.hf_config,
+            capture_tail_hooks=self.capture_tail_hooks,
+            is_draft=self.is_draft_worker,
+        )
+        install_gigakernel(
             model=self.model,
             hf_config=self.model_config.hf_config,
             capture_tail_hooks=self.capture_tail_hooks,

@@ -129,7 +129,12 @@ def handle_xpu_backends(server_args: Any):
         # Decode graph is opt-in on XPU: unless the user explicitly set
         # --cuda-graph-backend-decode (or --cuda-graph-config), keep it
         # disabled so the default startup doesn't require graph capture.
-        if (Phase.DECODE, "backend") not in server_args._cuda_graph_config_locked:
+        # --enable-intel-gigakernel runs only inside decode graphs, so it opts in.
+        decode_backend_set = (
+            Phase.DECODE,
+            "backend",
+        ) in server_args._cuda_graph_config_locked
+        if not decode_backend_set and not cfg.enable_intel_gigakernel:
             declare_resolution(
                 server_args,
                 "_handle_xpu_backends",

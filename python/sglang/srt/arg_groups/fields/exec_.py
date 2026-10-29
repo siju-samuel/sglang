@@ -232,6 +232,10 @@ class ExecKernel(msgspec.Struct):
         bool,
         "Enable the AMD monokernels from the sgl-amd-mono package. Supported decode and verify steps use persistent kernels; other steps use the standard forward. An unsupported startup configuration raises an error listing the reasons. Experimental feature.",
     ] = False
+    enable_intel_gigakernel: A[
+        bool,
+        "Enable the Intel gigakernels from the sgl-intel-giga package. Supported decode steps on Intel XPUs use its fused kernels; other steps use the standard forward. It runs inside decode graphs, so it turns them on unless --cuda-graph-backend-decode is given. An unsupported startup configuration raises an error listing the reasons. Experimental feature.",
+    ] = False
     prefill_attention_backend: A[
         Optional[str],
         Arg(

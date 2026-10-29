@@ -355,11 +355,15 @@ def run_resolution_pipeline(server_args: Any) -> None:
     from sglang.srt.kernel_plugins.amd.binding import (
         handle_amd_monokernel,
     )
+    from sglang.srt.kernel_plugins.intel.binding import (
+        handle_intel_gigakernel,
+    )
     from sglang.srt.kernel_plugins.nvidia.binding import (
         handle_nvidia_megakernel,
     )
 
-    # first, so a server with both kernel flags gets every reason in one error
+    # in this order, so a server with two kernel flags gets every reason in one error
+    run_hook(handle_intel_gigakernel, server_args)
     run_hook(handle_nvidia_megakernel, server_args)
     run_hook(handle_amd_monokernel, server_args)
 
