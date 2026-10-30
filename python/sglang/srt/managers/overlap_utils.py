@@ -12,7 +12,7 @@ from sglang.srt.runtime_context import (
     get_exec,
     get_spec,
 )
-from sglang.srt.utils import is_cuda, is_hip, is_npu
+from sglang.srt.utils import is_cuda, is_hip, is_npu, is_xpu
 
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
@@ -67,6 +67,7 @@ def decide_needs_confidence_relay() -> bool:
 _is_cuda = is_cuda()
 _is_hip = is_hip()
 _is_npu = is_npu()
+_is_xpu = is_xpu()
 
 # Token-buf consume tracking: init to -1, assert non-negative on gather,
 # write -1 back. Catches "gather without intermediate stash" bugs. CI enables
@@ -217,7 +218,7 @@ class ConfidenceRelay(msgspec.Struct):
         self.confidence_buf = torch.empty(
             (self.req_pool_size, gamma), dtype=torch.float32, device=self.device
         )
-        if _is_cuda:
+        if _is_cuda or _is_xpu:
             depth = CONFIDENCE_RELAY_RING_DEPTH
             self.conf_ring = torch.empty(
                 (depth, self.req_pool_size, gamma),
@@ -321,10 +322,10 @@ class FutureMap:
                 (self.req_pool_size,), dtype=torch.int64, device=self.device
             )
         # Pinned host copy of new_seq_lens_buf + private stream for fwd-prepare
-        # D2H pulls (gated only on publish, off the schedule stream). CUDA-only:
-        # recovers occupancy lost to the WAR barrier (also CUDA-only); other
-        # platforms have no barrier and use the plain .cpu() bootstrap path.
-        if _is_cuda:
+        # D2H pulls (gated only on publish, off the schedule stream). Recovers
+        # occupancy lost to the WAR barrier; platforms without the barrier use
+        # the plain .cpu() bootstrap path.
+        if _is_cuda or _is_xpu:
             self.new_seq_lens_cpu_pinned = torch.empty(
                 (self.req_pool_size,), dtype=torch.int64, pin_memory=True
             )
