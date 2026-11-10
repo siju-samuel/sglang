@@ -55,6 +55,11 @@ from sglang.srt.utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 
 logger = logging.getLogger(__name__)
 
+# Spelled out rather than imported from `compressed_tensors`, which is an
+# optional dependency this module must not require.
+_COMPRESSED_TENSORS_METHODS = ("compressed-tensors", "compressed_tensors")
+_MXFP8_QUANTIZED_FORMAT = "mxfp8-quantized"
+
 _MODEL_CONFIG_FACTORIES: dict[type[ServerArgs], Callable[..., "ModelConfig"]] = {}
 
 
@@ -1915,6 +1920,10 @@ class ModelConfig:
                 )
                 if parsed_cfg:
                     quant_cfg.update(parsed_cfg)
+            else:
+                parsed_cfg = self._parse_compressed_tensors_mxfp8_config(quant_cfg)
+                if parsed_cfg:
+                    quant_cfg.update(parsed_cfg)
 
         if quant_cfg is None:
             # compressed-tensors uses a "compression_config" key
@@ -2010,6 +2019,63 @@ class ModelConfig:
             quant_cfg["quant_method"] = "modelslim"
 
         return quant_cfg
+
+    def _parse_compressed_tensors_mxfp8_config(self, quant_cfg: dict) -> Optional[dict]:
+        """Route a compressed-tensors MXFP8 checkpoint onto the native config.
+
+        llm-compressor and AutoRound write MXFP8 as compressed-tensors with
+        ``format: mxfp8-quantized`` and a group-32 float8 scheme on both the
+        weight and the activation. The compressed-tensors scheme table has no
+        MX entry: ``is_activation_quantization_format`` does not list the
+        format, and ``_is_fp8_w8a8`` accepts only tensor, channel and block
+        strategies, so a group-32 scheme reaches the end of
+        ``_get_scheme_from_parts`` and raises "No compressed-tensors
+        compatible scheme was found".
+
+        SGLang already implements the format natively -- ``Fp8Config`` with a
+        ``[1, group]`` weight block and ``ue8m0`` scales -- so the checkpoint
+        is pointed there instead. This is the same translation
+        ``_parse_modelopt_quant_config`` performs for ModelOpt's ``MXFP8``
+        quant_algo; only the spelling of the source config differs.
+        """
+        if quant_cfg.get("quant_method") not in _COMPRESSED_TENSORS_METHODS:
+            return None
+        if quant_cfg.get("format") != _MXFP8_QUANTIZED_FORMAT:
+            return None
+
+        group_sizes = {
+            group["weights"]["group_size"]
+            for group in (quant_cfg.get("config_groups") or {}).values()
+            if isinstance(group.get("weights"), dict)
+            and group["weights"].get("group_size") is not None
+        }
+        if len(group_sizes) > 1:
+            # One weight block shape is baked into the native config, so a
+            # checkpoint mixing group sizes would be silently mis-scaled.
+            raise ValueError(
+                f"compressed-tensors MXFP8 checkpoint mixes weight group sizes "
+                f"{sorted(group_sizes)}; SGLang's MXFP8 path takes a single "
+                "group size."
+            )
+        group_size = group_sizes.pop() if group_sizes else 32
+
+        parsed = {
+            "quant_method": "mxfp8",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [1, group_size],
+            "scale_fmt": "ue8m0",
+        }
+        ignored_layers = quant_cfg.get("ignore")
+        if ignored_layers:
+            parsed["modules_to_not_convert"] = ignored_layers
+        kv_cache_scheme = quant_cfg.get("kv_cache_scheme")
+        if (
+            isinstance(kv_cache_scheme, dict)
+            and kv_cache_scheme.get("type") == "float"
+            and kv_cache_scheme.get("num_bits") == 8
+        ):
+            parsed["kv_cache_quant_algo"] = "FP8"
+        return parsed
 
     def _parse_modelopt_quant_config(self, quant_config_dict: dict) -> Optional[dict]:
         """Parse ModelOpt quantization config and return the appropriate quant_method.
