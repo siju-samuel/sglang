@@ -185,6 +185,7 @@ class TestPPCommOverlap(CustomTestCase):
         with (
             published_topology(role="scheduler", pp_size=2, tp_size=tp_size),
             patch.object(pp_mod, "_is_npu", True),
+            patch.object(pp_mod, "_is_xpu", False),
             pp_mod.envs.SGLANG_PP_SKIP_PURE_CHUNKED_OUTPUT_COMM.override(False),
             patch.multiple(
                 torch.distributed,
@@ -240,6 +241,95 @@ class TestPPCommOverlap(CustomTestCase):
             proxy = schedulers[1]._pp_recv_proxy_tensors()
             torch.testing.assert_close(proxy.tensors["hidden_states"], expected_gather)
             self.assertTrue(all(not queue for queue in mailboxes.values()))
+
+    def test_xpu_sends_pp_tensors_whole(self):
+        """XPU sends every PP tensor message whole and runs no attn-TP
+        all-gather; other devices keep proxies and outputs sharded.
+        """
+        for is_xpu in (True, False):
+            for tp_size in (2, 4):
+                for tp_rank in range(tp_size):
+                    with self.subTest(is_xpu=is_xpu, tp_size=tp_size, tp_rank=tp_rank):
+                        self._check_pp2_tensor_sharding(is_xpu, tp_size, tp_rank)
+
+    def _check_pp2_tensor_sharding(self, is_xpu, tp_size, tp_rank):
+        mailboxes = defaultdict(deque)
+        active_stage = 0
+        work = SimpleNamespace(wait=lambda: None)
+        gathered = []
+        sent_whole = None
+
+        def send(tensor, dst, group=None, tag=0):
+            mailboxes[active_stage, dst].append(tensor.clone())
+            return work
+
+        def recv(tensor, src, group=None, tag=0):
+            sent = mailboxes[src, active_stage].popleft()
+            self.assertEqual(tensor.shape, sent.shape)
+            tensor.copy_(sent)
+            return work
+
+        def all_gather(tensor, dim=0):
+            self.assertEqual(dim, 0)
+            torch.testing.assert_close(tensor, sent_whole.reshape(tp_size, -1)[tp_rank])
+            gathered.append(tensor)
+            return sent_whole.flatten().clone()
+
+        schedulers = []
+        for stage in (0, 1):
+            group = object.__new__(GroupCoordinator)
+            group.__dict__.update(
+                rank=stage,
+                rank_in_group=stage,
+                ranks=[0, 1],
+                world_size=2,
+                cpu_group=object(),
+                device_group=object(),
+            )
+            schedulers.append(
+                _make_scheduler(
+                    pp_group=group,
+                    attn_tp_group=SimpleNamespace(
+                        world_size=tp_size, rank_in_group=tp_rank, all_gather=all_gather
+                    ),
+                    pp_comm_stream=None,
+                    pp_comm_stream_ctx=nullcontext(),
+                    _pp_tensor_dict_inbox=defaultdict(deque),
+                )
+            )
+
+        whole, shard = 8, 8 // tp_size
+        with (
+            published_topology(role="scheduler", pp_size=2, tp_size=tp_size),
+            patch.object(pp_mod, "_is_npu", False),
+            patch.object(pp_mod, "_is_xpu", is_xpu),
+            patch.multiple(
+                torch.distributed, is_initialized=lambda: True, isend=send, irecv=recv
+            ),
+        ):
+            # Stage 0 -> stage 1: hidden-state proxy.
+            sent_whole = torch.arange(8).reshape(2, 4)
+            active_stage = 0
+            schedulers[0]._pp_send_dict_to_next_stage(
+                {"hidden_states": sent_whole}, msg_type="proxy"
+            )
+            self.assertEqual(mailboxes[0, 1][-1].numel(), whole if is_xpu else shard)
+            active_stage = 1
+            proxy = schedulers[1]._pp_recv_proxy_tensors()
+            torch.testing.assert_close(proxy.tensors["hidden_states"], sent_whole)
+
+            # Last stage -> stage 0: sampled outputs.
+            sent_whole = torch.arange(8) + 100
+            schedulers[1]._pp_send_dict_to_next_stage(
+                {"next_token_ids": sent_whole}, msg_type="output"
+            )
+            self.assertEqual(mailboxes[1, 0][-1].numel(), whole if is_xpu else shard)
+            active_stage = 0
+            received, _ = schedulers[0]._pp_recv_dict_from_prev_stage()
+            torch.testing.assert_close(received["next_token_ids"], sent_whole)
+
+        self.assertTrue(all(not queue for queue in mailboxes.values()))
+        self.assertEqual(len(gathered), 0 if is_xpu else 2)
 
 
 if __name__ == "__main__":

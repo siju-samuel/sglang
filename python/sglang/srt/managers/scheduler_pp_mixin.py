@@ -42,10 +42,11 @@ from sglang.srt.state_capturer.routed_experts import (
     returned_routed_experts_output,
 )
 from sglang.srt.utils import DynamicGradMode, point_to_point_pyobj
-from sglang.srt.utils.device import is_npu
+from sglang.srt.utils.device import is_npu, is_xpu
 from sglang.srt.utils.invariants import expect_host, resolve_level
 
 _is_npu = is_npu()
+_is_xpu = is_xpu()
 logger = logging.getLogger(__name__)
 
 # Keeps verdicts apart from the untagged objects the stages exchange.
@@ -1069,6 +1070,19 @@ class SchedulerPPMixin:
             tensor_dict[PP_ROUTED_EXPERTS_KEY] = result.routed_experts_output.topk
         return tensor_dict
 
+    def _pp_tensor_all_gather_group(self: Scheduler):
+        """Group that shards PP tensor messages, or None to send them whole.
+
+        A sharded message sends each attn-TP rank 1/attn_tp_size of every
+        tensor and all-gathers it over attn-TP on receive. On XPU that
+        receive-side all-gather deadlocks TP x PP (seen with oneCCL 2022.3 on
+        Intel Xe3P): one attn-TP rank blocks in a TP collective that its peer
+        has already left, and the driver resets the GPU. XPU sends every PP
+        tensor message whole, so the PP exchange runs no TP collective and
+        both ends agree for every message kind.
+        """
+        return None if _is_xpu else self.attn_tp_group
+
     def _pp_send_dict_to_next_stage(
         self: Scheduler,
         tensor_dict: Dict[str, torch.Tensor],
@@ -1099,7 +1113,7 @@ class SchedulerPPMixin:
                         and get_parallel().pp_size == 2
                         and self.pp_group.is_last_rank
                         and msg_type == "output"
-                        else self.attn_tp_group
+                        else self._pp_tensor_all_gather_group()
                     ),
                     async_send=async_send,
                 )
@@ -1161,7 +1175,7 @@ class SchedulerPPMixin:
         if not self.pp_group.is_first_rank:
             tensor_dict, self.pp_proxy_recv_event = self._pp_recv_typed_dict(
                 expected_kind="proxy",
-                all_gather_group=(self.attn_tp_group),
+                all_gather_group=self._pp_tensor_all_gather_group(),
             )
             pp_proxy_tensors = PPProxyTensors(tensor_dict)
         return pp_proxy_tensors
@@ -1176,7 +1190,7 @@ class SchedulerPPMixin:
                 if _is_npu
                 and get_parallel().pp_size == 2
                 and self.pp_group.is_first_rank
-                else self.attn_tp_group
+                else self._pp_tensor_all_gather_group()
             ),
         )
 
