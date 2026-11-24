@@ -189,6 +189,7 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqOutput,
     MMInputsProcessError,
     OpenSessionReqInput,
+    ParkSessionReqInput,
     PauseGenerationReqInput,
     PdRoleSwitchReqInput,
     PluginWeightUpdateReqInput,
@@ -2011,6 +2012,7 @@ class Scheduler(
                 (AbortReq, self.abort_request),
                 (OpenSessionReqInput, self.open_session),
                 (CloseSessionReqInput, self.close_session),
+                (ParkSessionReqInput, self.park_session),
                 (ReleaseUocrDocReqInput, self.release_uocr_doc),
                 (
                     UpdateWeightFromDiskReqInput,
@@ -3457,6 +3459,7 @@ class Scheduler(
                 req.session_generation = self.tree_cache.ensure_session_generation(
                     recv_req.session_id
                 )
+                self.tree_cache.unpark_session(recv_req.session_id)
 
             if is_beam:
                 error_msg = self.beam_coordinator.validate_and_init(req, recv_req)
@@ -3499,6 +3502,7 @@ class Scheduler(
                 req.session_generation = self.tree_cache.ensure_session_generation(
                     session_id
                 )
+                self.tree_cache.unpark_session(session_id)
             # TODO: set trace context
             if self.metrics_reporter.enable_metrics:
                 req.time_stats.set_metrics_collector(self.metrics_collector)
@@ -7027,6 +7031,16 @@ class Scheduler(
             or not self.enable_session_radix_cache
         ):
             self.session_controller.close(recv_req)
+
+    def park_session(self, recv_req: ParkSessionReqInput):
+        """Order a session's idle KV for eviction by when its next turn is due."""
+        if not self.enable_session_radix_cache:
+            return
+        if recv_req.resume_at is None:
+            # Ranks must agree on the eviction order, so none stamps its own clock.
+            logger.warning("Ignoring /park_session without a TokenizerManager stamp.")
+            return
+        self.tree_cache.park_session(recv_req.session_id, recv_req.resume_at)
 
     def release_uocr_doc(self, recv_req: ReleaseUocrDocReqInput):
         """Free the window a split document retained for its next window."""

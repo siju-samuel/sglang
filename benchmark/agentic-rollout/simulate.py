@@ -60,6 +60,13 @@ async def check_response(response):
         raise ValueError(f"HTTP {response.status} {response.url}: {detail}")
 
 
+async def park_session(http, url, session_id, eta_s):
+    async with http.post(
+        url + "/park_session", json={"session_id": session_id, "eta_s": eta_s}
+    ) as response:
+        await check_response(response)
+
+
 async def json_request(http, method, url, **kwargs):
     async with http.request(method, url, **kwargs) as response:
         await check_response(response)
@@ -183,6 +190,18 @@ async def conversation(
             )
         for turn in range(args.turns):
             delay = rng.uniform(*args.tool_delay) if turn else 0
+            if turn and args.park_sessions:
+                await park_session(http, args.base_url, sid, delay)
+                record(
+                    sessions,
+                    {
+                        **identity,
+                        "event": "park",
+                        "id": sid,
+                        "eta_s": delay,
+                        "timestamp": time.time(),
+                    },
+                )
             tool_started_at = time.time()
             delay_start = time.perf_counter()
             await asyncio.sleep(delay)
@@ -397,6 +416,12 @@ def parse_args(argv=None):
         help="Range of simulated tool waits between turns, in seconds",
     )
     parser.add_argument(
+        "--park-sessions",
+        action="store_true",
+        help="Before each tool wait, POST /park_session with the wait as eta_s "
+        "(ordinary mode; the server needs --enable-session-radix-cache)",
+    )
+    parser.add_argument(
         "--start-spread",
         type=float,
         default=5,
@@ -428,6 +453,8 @@ def parse_args(argv=None):
         help="New directory for request records, metrics, and run settings",
     )
     args = parser.parse_args(argv)
+    if args.park_sessions and args.mode != "ordinary":
+        parser.error("--park-sessions needs --mode ordinary")
     args.base_url = args.base_url.rstrip("/")
     return args
 

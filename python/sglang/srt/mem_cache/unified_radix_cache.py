@@ -109,6 +109,7 @@ from sglang.srt.mem_cache.unified_cache.components import (
     SWAComponent,
     TreeComponent,
 )
+from sglang.srt.mem_cache.unified_cache.session_park import SessionParkTracker
 from sglang.srt.mem_cache.unified_cache.session_ref_tracker import (
     UnifiedSessionRefTracker,
 )
@@ -352,6 +353,7 @@ class UnifiedRadixCache(BasePrefixCache):
             tree_core=self.tree_core,
             enable_session_radix_cache=self.enable_session_radix_cache,
         )
+        self.session_park = SessionParkTracker()
 
         self.sidecar_pool_specs: list[SidecarPoolSpec] = []
 
@@ -510,6 +512,7 @@ class UnifiedRadixCache(BasePrefixCache):
         self._discard_restore_backups()
         self.tree_core.reset()
         self.session_refs.reset()
+        self.session_park.reset()
 
         # Reset Controller.
         self.session.slots.clear()
@@ -4917,7 +4920,24 @@ class UnifiedRadixCache(BasePrefixCache):
         return self.session_refs.ensure_session_generation(session_id)
 
     def release_radix_session(self, session_id: str) -> int:
+        self.session_park.unpark(session_id)
         return self.session_refs.release_radix_session(session_id)
+
+    def park_session(self, session_id: str, resume_at: float) -> bool:
+        """Order the session's idle KV for eviction by its expected resume time.
+
+        False when the session is unknown, so nothing is recorded for it.
+        """
+        if not (
+            self.enable_session_radix_cache
+            and self.session_refs.has_session(session_id)
+        ):
+            return False
+        self.session_park.park(session_id, resume_at)
+        return True
+
+    def unpark_session(self, session_id: str) -> None:
+        self.session_park.unpark(session_id)
 
     # ---- Streaming session API (delegates to self.session) ----
 

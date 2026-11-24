@@ -44,13 +44,35 @@ curl -X POST http://localhost:30000/close_session \
 
 Closing removes the session's references but does not immediately free its KV. The KV remains reusable and returns to the normal eviction order.
 
+## Park a session during a tool call
+
+An agent's turn often ends in a tool call, and the session sends nothing until the tool returns. If the application knows roughly how long that takes, it can park the session with the expected wait:
+
+```bash Command
+curl -X POST http://localhost:30000/park_session \
+  -H "Content-Type: application/json" \
+  -d '{"session_id": "agent-42", "eta_s": 12.5}'
+```
+
+From the offline engine, call `engine.park_session("agent-42", eta_s=12.5)`.
+
+Under memory pressure, a parked session's KV is evicted before an active session's, and among parked sessions the one due back last goes first, so the KV that stays is the KV needed soonest. Without parking, referenced sessions fall back to least-recently-used order, which evicts the session that has waited longest, often the one about to return.
+
+- A node is parked only when no active session covers it. A prefix shared with an active session, such as a common system prompt, keeps its reference-count protection; a prefix shared only by parked sessions takes the earliest of their due times.
+- Parking follows the session, not a snapshot of its KV: turns that finish after the park, and branches of the session's history, are parked too.
+- The session's next request unparks it, and so does releasing it (`/close_session` or the `/open_session` timeout). A session past its expected time stays parked with the earliest due time, so it is the last parked session evicted.
+- `eta_s` is a hint: a wrong value only changes which parked session is evicted first, never outputs. A park for an unknown session is ignored, and `/park_session` returns 400 without `--enable-session-radix-cache`.
+- With HiCache (`--enable-hierarchical-cache`), host-pool eviction follows the same order.
+- With DP attention, a park reaches every DP rank, so an `/open_session` session stays parked on ranks that never receive its next request until it is released. `sgl-router` does not forward `/park_session` yet; send it to the workers.
+- Parking applies to the Full attention component; SWA and Mamba eviction are unchanged. Streaming sessions hold their KV in the session, so parking does not apply to them. The Rust frontend (`SGLANG_RUST_SERVER=1`) does not serve `/park_session` yet.
+
 ## Eviction behavior
 
 The cache tracks references independently for each UnifiedRadixCache component. Device and host eviction use the same session preference.
 
 | Component | Referenced data | Eviction order |
 | --- | --- | --- |
-| Full attention | The reusable prefix path from the registered leaf to the root | Unreferenced nodes first, then referenced nodes with fewer session references, then the configured policy such as LRU |
+| Full attention | The reusable prefix path from the registered leaf to the root | Unreferenced nodes first, then nodes only parked sessions cover, latest due time first, then referenced nodes with fewer session references, then the configured policy such as LRU |
 | Sliding-window attention (SWA) | The reusable tail covering the sliding window plus page-alignment allowance | Two LRU passes: unreferenced nodes first, then referenced nodes if more space is required |
 | Mamba | The reusable state on the registered leaf | Two LRU passes: unreferenced nodes first, then referenced nodes if more space is required |
 

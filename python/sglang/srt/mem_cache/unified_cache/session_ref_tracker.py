@@ -92,6 +92,9 @@ class UnifiedSessionRefTracker:
         self._session_generations[session_id] = self._session_incarnation_counter
         return self._session_incarnation_counter
 
+    def has_session(self, session_id: str) -> bool:
+        return session_id in self._session_generations
+
     def ensure_session_generation(self, session_id: str) -> int:
         generation = self._session_generations.get(session_id)
         if generation is None:

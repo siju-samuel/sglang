@@ -60,6 +60,12 @@ class FullComponent(TreeComponent):
         )
         # Kept across one eviction walk; without session refs no priority changes mid-walk.
         self._host_eviction_heap: Optional[list] = None
+        # Node id -> resume time of parked KV, rebuilt at a walk's start only after
+        # session coverage was added or released, a node split, or the parked set
+        # changed.
+        self._parked_resume_at: dict[int, float] = {}
+        self._session_coverage_version = 0
+        self._parked_map_key: Optional[tuple[int, int]] = None
 
     def _ensure_eviction_strategy(self) -> None:
         if self.session_ref_eviction_strategy is None:
@@ -68,6 +74,7 @@ class FullComponent(TreeComponent):
             )
 
     def _dec_session_coverage(self, session_id: str, leaf: UnifiedTreeNode) -> None:
+        self._session_coverage_version += 1
         node = leaf
         while node is not None and node is not self.tree_core.root_node:
             cd = node.component_data[self.component_type]
@@ -81,6 +88,7 @@ class FullComponent(TreeComponent):
         leaf: UnifiedTreeNode,
         old_ancestor: Optional[UnifiedTreeNode],
     ) -> None:
+        self._session_coverage_version += 1
         stop = old_ancestor if old_ancestor is not None else self.tree_core.root_node
         node = leaf
         while (
@@ -97,6 +105,9 @@ class FullComponent(TreeComponent):
         leaf: UnifiedTreeNode,
         fallback: Optional[UnifiedTreeNode],
     ) -> None:
+        # No version bump: a receding leaf only takes coverage away, which can
+        # leave the parked map conservative (KV kept as active or due sooner), never
+        # parked when active. Eviction deletes leaves here, so this keeps walks cheap.
         stop = fallback if fallback is not None else self.tree_core.root_node
         node = leaf
         while (
@@ -152,6 +163,8 @@ class FullComponent(TreeComponent):
         ct = self.component_type
         new_parent.component_data[ct].lock_ref = child.component_data[ct].lock_ref
         new_parent.component_data[ct].session_ref = child.component_data[ct].session_ref
+        if new_parent.component_data[ct].session_ref:
+            self._session_coverage_version += 1
         child_cd = child.component_data[ct]
         new_parent.component_data[ct].host_lock_ref = child_cd.host_lock_ref
         # A Full host lock starts as a one-node segment. Splitting that node
@@ -204,12 +217,34 @@ class FullComponent(TreeComponent):
     def eviction_priority(self, is_leaf: bool) -> int:
         return 0 if is_leaf else 2
 
+    def _refresh_parked_resume_at(self) -> None:
+        park = self.cache.session_park
+        key = (self._session_coverage_version, park.version)
+        if key == self._parked_map_key:
+            return
+        self._parked_resume_at = park.parked_resume_at(
+            session_leaves=self.session_leaves,
+            session_ref=self.session_ref,
+            root=self.tree_core.root_node,
+        )
+        self._parked_map_key = key
+
     def _session_ref_eviction_strategy(self, node: UnifiedTreeNode):
         ref = self.session_ref(node)
-        return ref > 0, ref, self.tree_core.eviction_strategy.get_priority(node)
+        # Parked KV goes before an active session's, the latest resume first.
+        resume_at = self._parked_resume_at.get(node.id) if ref > 0 else None
+        return (
+            ref > 0,
+            resume_at is None,
+            -resume_at if resume_at is not None else 0.0,
+            ref,
+            self.tree_core.eviction_strategy.get_priority(node),
+        )
 
     def _evict_device_start(self, request_cnt: int) -> None:
         self._ensure_eviction_strategy()
+        if self.cache.enable_session_radix_cache:
+            self._refresh_parked_resume_at()
         self._evict_device_request_cnt = request_cnt
         self._evict_device_last_node = None
         self._evict_device_heap = [
@@ -270,6 +305,8 @@ class FullComponent(TreeComponent):
         if tracker[self.component_type] >= num_tokens:
             return
         if self._host_eviction_heap is None:
+            if self.cache.enable_session_radix_cache:
+                self._refresh_parked_resume_at()
             self._host_eviction_heap = [
                 (self.session_ref_eviction_strategy(n), n)
                 for n in self.tree_core.evictable_host_leaves

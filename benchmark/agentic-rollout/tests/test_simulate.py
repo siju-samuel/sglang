@@ -26,6 +26,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.failure = None
         self.sessions = {}
         self.closed = []
+        self.parked = []
         self.payloads = []
 
         async def info(request):
@@ -47,6 +48,11 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         async def close_session(request):
             self.closed.append((await request.json())["session_id"])
             return web.json_response(None)
+
+        async def park_session(request):
+            payload = await request.json()
+            self.parked.append((payload["session_id"], payload["eta_s"]))
+            return web.Response()
 
         async def generate(request):
             payload = await request.json()
@@ -106,6 +112,7 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
             ("GET", "/server_info", info),
             ("POST", "/open_session", open_session),
             ("POST", "/close_session", close_session),
+            ("POST", "/park_session", park_session),
             ("POST", "/generate", generate),
             ("GET", "/metrics", metrics),
         ]:
@@ -210,6 +217,28 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
                         json.loads((path / "summary.json").read_text())["status"],
                         "completed",
                     )
+
+    async def test_park_sessions_parks_before_each_tool_wait(self):
+        with tempfile.TemporaryDirectory() as directory:
+            await bench.run(
+                self.args(
+                    Path(directory) / "park",
+                    "ordinary",
+                    ["--park-sessions", "--tool-delay", "0.01", "0.01"],
+                ),
+                Tokenizer(),
+            )
+        # Two conversations of three turns: one park per tool wait, none before turn 0.
+        self.assertEqual(len(self.parked), 4)
+        self.assertEqual({sid for sid, _ in self.parked}, set(self.sessions))
+        self.assertTrue(all(eta == 0.01 for _, eta in self.parked))
+
+    def test_park_sessions_needs_ordinary_sessions(self):
+        with self.assertRaises(SystemExit):
+            bench.parse_args(
+                ["--tokenizer", "fake", "--output-dir", "x", "--park-sessions"]
+                + ["--mode", "full-history"]
+            )
 
     async def test_omitted_rank_requires_verified_single_worker(self):
         self.omit_rank = True

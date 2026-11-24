@@ -57,6 +57,7 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqOutput,
     LoRAUpdateOutput,
     OpenSessionReqInput,
+    ParkSessionReqInput,
     PdRoleSwitchReqInput,
     PdRoleSwitchReqOutput,
     PluginWeightUpdateReqInput,
@@ -96,6 +97,7 @@ from sglang.srt.platforms import current_platform
 from sglang.srt.runtime_context import (
     get_disagg,
     get_lora,
+    get_memory,
     get_parallel,
     get_serving,
     get_spec,
@@ -1054,6 +1056,19 @@ class TokenizerControlMixin:
         obj: CloseSessionReqInput,
         request: Optional[fastapi.Request] = None,
     ):
+        await self._async_dispatch_to_scheduler(obj)
+
+    async def park_session(
+        self: TokenizerManager,
+        obj: ParkSessionReqInput,
+        request: Optional[fastapi.Request] = None,
+    ):
+        if not get_memory().enable_session_radix_cache:
+            raise ValueError(
+                "Parking a session needs --enable-session-radix-cache. "
+                "Please relaunch with it."
+            )
+        obj.resume_at = time.time() + max(0.0, obj.eta_s)
         await self._async_dispatch_to_scheduler(obj)
 
     def release_uocr_doc(self: TokenizerManager, doc_id: str) -> None:

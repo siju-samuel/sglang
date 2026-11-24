@@ -2707,6 +2707,16 @@ class CloseSessionReqInput(BaseReq, kw_only=True):
     session_id: str
 
 
+class ParkSessionReqInput(BaseReq, kw_only=True):
+    """The session's turn went to a tool; its next turn is expected in ``eta_s``."""
+
+    session_id: str
+    eta_s: float
+    # Wall-clock resume time, stamped once by the TokenizerManager so every
+    # scheduler rank orders parked sessions the same way.
+    resume_at: Optional[float] = None
+
+
 class ReleaseUocrDocReqInput(BaseReq, kw_only=True):
     """Free the KV a split document retained for its next window."""
 

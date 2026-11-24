@@ -160,6 +160,7 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterFromTensorsReqInput,
     LoadLoRAAdapterReqInput,
     OpenSessionReqInput,
+    ParkSessionReqInput,
     ParseFunctionCallReq,
     PauseGenerationReqInput,
     PdRoleSwitchReqInput,
@@ -1738,6 +1739,19 @@ async def close_session(obj: Annotated[CloseSessionReqInput, Body()], request: R
     """Close the session."""
     try:
         await _global_state.tokenizer_manager.close_session(obj, request)
+        return Response(status_code=200)
+    except Exception as e:
+        return _create_error_response(e)
+
+
+@app.api_route("/park_session", methods=["POST"])
+async def park_session(obj: Annotated[ParkSessionReqInput, Body()], request: Request):
+    """Mark a session idle until ``eta_s`` from now, e.g. while its tool call runs.
+
+    Needs --enable-session-radix-cache; the session's next request unparks it.
+    """
+    try:
+        await _global_state.tokenizer_manager.park_session(obj, request)
         return Response(status_code=200)
     except Exception as e:
         return _create_error_response(e)

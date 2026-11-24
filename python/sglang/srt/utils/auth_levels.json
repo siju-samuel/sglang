@@ -45,6 +45,7 @@
   "/model_info": "normal",
   "/open_session": "normal",
   "/openapi.json": "normal",
+  "/park_session": "normal",
   "/parse_function_call": "normal",
   "/pause_generation": "admin_force",
   "/pd_role_switch": "admin_force",

@@ -275,6 +275,9 @@ class TreeComponent(ABC):
     def session_ref(self, node: UnifiedTreeNode) -> int:
         return node.component_data[self.component_type].session_ref
 
+    def session_leaves(self, session_id: str) -> tuple[UnifiedTreeNode, ...]:
+        return tuple(self._session_leaves.get(session_id, ()))
+
     def _can_evict_leaf_atomically(self, node: UnifiedTreeNode) -> bool:
         # Don't allow a non-session-ref component to cascade-evict
         # a high-priority session-ref component.

@@ -68,6 +68,10 @@ uv run benchmark/agentic-rollout/simulate.py \
 
 Check measured GPU/host capacities first. Final history per conversation is `initial + (turns - 1) * (tool + output) + output`. Increase conversations until the live histories exceed GPU capacity while fitting host capacity, then freeze the workload. Verify actual CPU restores; a large configured workload alone is not evidence of cache pressure. Use fresh output directories and servers for each comparison; repeat in reverse order to check repeatability.
 
+### Park sessions during tool waits
+
+With `--park-sessions` (ordinary mode), each conversation posts `/park_session` with its next tool wait as `eta_s` before it sleeps. A server started with `--enable-session-radix-cache` then evicts the parked session due back last first instead of the least recently used one (see [Session-Aware Radix Cache](../../docs/docs/advanced_features/session_radix_cache.mdx)). It changes eviction only under cache pressure, so compare runs with and without it on the same frozen workload.
+
 ## Read results
 
 The client writes `manifest.json`, `requests.jsonl`, `sessions.jsonl`, and raw `metrics.jsonl`. It stops on request failures, records partial evidence, and attempts session cleanup. A close HTTP response confirms submission, not synchronous release of every cache allocation. Metrics scrape errors are recorded separately; missing metrics do not invalidate successful client timing.

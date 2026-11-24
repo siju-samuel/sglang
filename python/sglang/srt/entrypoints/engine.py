@@ -88,6 +88,7 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqInput,
     MultimodalDataInputFormat,
     OpenSessionReqInput,
+    ParkSessionReqInput,
     ProfileReq,
     ProfileReqType,
     ReleaseMemoryOccupationReqInput,
@@ -1612,6 +1613,21 @@ class Engine(EngineScoreMixin, EngineBase):
         """
         obj = CloseSessionReqInput(session_id=session_id)
         self.loop.run_until_complete(self.tokenizer_manager.close_session(obj, None))
+
+    def park_session(self, session_id: str, eta_s: float) -> None:
+        """Mark a session idle until ``eta_s`` seconds from now, e.g. while its tool
+        call runs.
+
+        Eviction then takes the parked session that is due back last before an
+        active session's KV. The session's next request, or closing it, unparks
+        it. Raises ``ValueError`` without ``--enable-session-radix-cache``.
+
+        Args:
+            session_id: The session to park.
+            eta_s: Seconds until the session's next request is expected.
+        """
+        obj = ParkSessionReqInput(session_id=session_id, eta_s=eta_s)
+        self.loop.run_until_complete(self.tokenizer_manager.park_session(obj, None))
 
     def start_profile(self, **kwargs):
         req = ProfileReq(req_type=ProfileReqType.START_PROFILE, **kwargs)

@@ -87,6 +87,7 @@ RUST_SERVER_IGNORED_BY_DESIGN: Dict[str, str] = {
     "enable_http_worker_reuseport": "Python HTTP server (multi-worker) setting.",
     "grpc_worker_threads": "Python gRPC server thread pool.",
     # Routes the Rust server does not serve: their clients get a 404.
+    "enable_session_radix_cache": "Only gates /park_session in the frontend, which is not served.",
     "asr_max_concurrent_sessions": "/v1/realtime is not served.",
     "enable_response_store": "The Rust frontend serves /v1/responses without a store; stateful requests get Python's store-disabled refusal.",
     "tool_server": "The Rust /v1/responses skips built-in tools, which only a tool server would run.",
