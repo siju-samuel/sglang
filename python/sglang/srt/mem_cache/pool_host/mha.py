@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
-from typing import Sequence
+from typing import Optional, Sequence
 
 import torch
 
@@ -53,6 +54,7 @@ from sglang.srt.mem_cache.pool_host.common import (
     make_kernel_ptr_table,
 )
 from sglang.srt.mem_cache.pool_host.hisparse import HiSparseHostPoolMixin
+from sglang.srt.mem_cache.pool_host.page_interleave import PageInterleaveHostPool
 from sglang.srt.mem_cache.pool_host.page_unified import PageUnifiedLayout
 from sglang.srt.platforms import current_platform
 from sglang.srt.utils import is_cuda, is_hip, is_npu, is_xpu
@@ -99,6 +101,85 @@ if _is_npu:
 
 logger = logging.getLogger(__name__)
 
+# One pinned (USM host) allocation on XPU is capped at the device's
+# max_mem_alloc_size, which torch does not expose: 22.7 of 23.9 GiB (0.95) on an
+# Arc Pro B60, measured. 0.9 is a margin below that, not a measured value.
+_XPU_MAX_ALLOC_FRACTION = 0.9
+
+
+def _xpu_pinned_chunk_bytes(device: torch.device) -> int:
+    """Largest power-of-two pinned buffer XPU ``device`` can allocate.
+
+    torch-xpu rounds a pinned request up to a power of two, so this is also the
+    largest request that does not fail (16 GiB on an Arc Pro B60).
+    """
+    total = torch.xpu.get_device_properties(device).total_memory
+    usable = int(total * _XPU_MAX_ALLOC_FRACTION)
+    return 1 << (usable.bit_length() - 1)
+
+
+def _xpu_split_chunks(
+    *, num_layers: int, layer_bytes: int, chunk_max_bytes: int
+) -> list[tuple[int, int]]:
+    """(layers, pinned bytes) of each chunk a split XPU host pool allocates."""
+    per_chunk = chunk_max_bytes // layer_bytes
+    if per_chunk == 0:
+        raise ValueError(
+            f"One host KV layer needs {layer_bytes / 2**30:.1f} GiB, more than one "
+            f"{chunk_max_bytes / 2**30:.0f} GiB XPU pinned allocation; lower "
+            "--hicache-size or --hicache-ratio."
+        )
+    chunks = []
+    remaining = num_layers
+    while remaining:
+        n = min(per_chunk, remaining)
+        # torch-xpu rounds a pinned request up to this power of two anyway.
+        chunks.append((n, 1 << (n * layer_bytes - 1).bit_length()))
+        remaining -= n
+    return chunks
+
+
+def _alloc_xpu_split_layers(
+    *, alloc_func, chunks, layer_shape: tuple, dtype, device, allocator
+) -> list[torch.Tensor]:
+    """Per-layer pinned host buffers carved from the planned pinned chunks."""
+    layer_bytes = math.prod(layer_shape) * dtype.itemsize
+    layers: list[torch.Tensor] = []
+    for n, chunk_bytes in chunks:
+        chunk = alloc_func(
+            (chunk_bytes,),
+            dtype=torch.uint8,
+            device=device,
+            pin_memory=True,
+            allocator=allocator,
+        )
+        layers.extend(
+            chunk[i * layer_bytes : (i + 1) * layer_bytes].view(dtype).view(layer_shape)
+            for i in range(n)
+        )
+    logger.info(
+        "XPU host KV pool split into %d pinned chunks: %.2f GiB pinned for %.2f GiB of KV.",
+        len(chunks),
+        sum(chunk_bytes for _, chunk_bytes in chunks) / 2**30,
+        len(layers) * layer_bytes / 2**30,
+    )
+    return layers
+
+
+def refuse_split_host_pool_for_storage(host_pool) -> None:
+    """L3 storage registers one contiguous host buffer, which a split pool lacks."""
+    while isinstance(host_pool, PageInterleaveHostPool):
+        host_pool = host_pool.host_pool
+    if (
+        isinstance(host_pool, MHATokenToKVPoolHost)
+        and host_pool.split_across_allocations
+    ):
+        raise ValueError(
+            "The XPU host KV pool is split across pinned allocations, which an L3 "
+            "storage backend cannot register. Lower --hicache-size or "
+            "--hicache-ratio to fit one allocation, or drop --hicache-storage-backend."
+        )
+
 
 def prepare_mha_write_back_staging(
     buffer_info: MHABufferInfo,
@@ -140,6 +221,9 @@ def prepare_mha_write_back_staging(
 
 
 class MHATokenToKVPoolHost(HostKVCache):
+    # Set by init_kv_buffer when an XPU pool is carved from several pinned chunks.
+    split_across_allocations = False
+
     def __init__(
         self,
         buffer_info: MHABufferInfo,
@@ -310,10 +394,43 @@ class MHATokenToKVPoolHost(HostKVCache):
         # Expose the host tensors required for zero-copy I/O registration.
         if self.layout == "page_unified":
             return [self.kv_buffer]
+        if self.split_across_allocations:
+            raise NotImplementedError(
+                "An XPU host KV pool larger than one pinned allocation is split per "
+                "layer and has no contiguous buffer for L3 storage registration."
+            )
         return [self.k_buffer, self.v_buffer]
 
     def get_ksize_per_token(self):
         return self.get_size_per_token() // 2
+
+    def _xpu_split_plan(self) -> Optional[list[tuple[int, int]]]:
+        """Pinned chunks of a split XPU pool; None when one allocation holds it."""
+        if not (_is_xpu and self.pin_memory):
+            return None
+        chunk_max_bytes = _xpu_pinned_chunk_bytes(self._transfer_device)
+        pool_bytes = self.size * self.size_per_token
+        if pool_bytes <= chunk_max_bytes:
+            return None
+        if self.layout != "layer_first":
+            raise ValueError(
+                f"A {pool_bytes / 2**30:.1f} GiB host KV pool exceeds one "
+                f"{chunk_max_bytes / 2**30:.0f} GiB XPU pinned allocation, and only "
+                f"the layer_first layout can be split across allocations (got "
+                f"{self.layout!r}). Use --hicache-mem-layout layer_first, or lower "
+                "--hicache-size or --hicache-ratio."
+            )
+        return _xpu_split_chunks(
+            num_layers=2 * self.layer_num,
+            layer_bytes=self.size * self.head_num * self.head_dim * self.dtype.itemsize,
+            chunk_max_bytes=chunk_max_bytes,
+        )
+
+    def get_mapping_lengths(self) -> list[int]:
+        chunks = self._xpu_split_plan()
+        if chunks is None:
+            return super().get_mapping_lengths()
+        return [chunk_bytes for _, chunk_bytes in chunks]
 
     def init_kv_buffer(self):
         if self.layout == "layer_first":
@@ -354,6 +471,19 @@ class MHATokenToKVPoolHost(HostKVCache):
         self.layout_dim = self.token_stride_size * self.layer_num
 
         alloc_func = ALLOC_MEMORY_FUNCS[self._transfer_device.type]
+        chunks = self._xpu_split_plan()
+        if chunks is not None:
+            layers = _alloc_xpu_split_layers(
+                alloc_func=alloc_func,
+                chunks=chunks,
+                layer_shape=dims[2:],
+                dtype=self.dtype,
+                device=self.device,
+                allocator=self.allocator,
+            )
+            self.split_across_allocations = True
+            # (k_layers, v_layers): k_buffer[layer] / v_buffer[layer] stay valid views.
+            return tuple(layers[: self.layer_num]), tuple(layers[self.layer_num :])
         buffer = alloc_func(
             dims,
             dtype=self.dtype,

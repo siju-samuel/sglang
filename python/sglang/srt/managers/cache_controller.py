@@ -696,6 +696,11 @@ class HiCacheController:
         """
         if self.enable_storage:
             raise RuntimeError("Storage backend already attached.")
+        from sglang.srt.mem_cache.pool_host.mha import (
+            refuse_split_host_pool_for_storage,
+        )
+
+        refuse_split_host_pool_for_storage(self.storage_host_pool)
         key_scheme = get_memory().hicache_storage_key_scheme
         if key_scheme != "unified" and self.storage_host_pool.layout == "page_unified":
             raise ValueError(

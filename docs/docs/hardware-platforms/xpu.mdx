@@ -316,6 +316,32 @@ via `--cuda-graph-backend-prefill` or `--cuda-graph-config`.
 | Two-batch overlap (`--enable-two-batch-overlap`) | Not yet supported |
 | Decode breakable graph (`--cuda-graph-backend-decode breakable`) | Not yet supported |
 
+## Hierarchical Cache (HiCache) Host Pool on Intel XPU
+
+HiCache's host tier keeps KV that the device pool evicts in pinned host memory
+(see [HiCache](/docs/advanced_features/hicache)). On XPU one pinned host
+allocation is capped by the device's `max_mem_alloc_size` (22.7 GiB on an Arc Pro
+B60), and torch-xpu rounds each pinned request up to a power of two, so one buffer
+holds at most 16 GiB there. A larger MHA host pool is split into per-layer buffers
+across several pinned allocations, which only the `layer_first` layout supports:
+
+```bash
+python -m sglang.launch_server --model-path meta-llama/Llama-3.1-8B-Instruct --device xpu \
+    --attention-backend intel_xpu --page-size 64 \
+    --enable-hierarchical-cache --hicache-size 100 --hicache-mem-layout layer_first
+```
+
+- A host pool above one allocation with any other `--hicache-mem-layout` is refused
+  at startup.
+- Each chunk is pinned at a power-of-two size, so the pool pins somewhat more than
+  `--hicache-size` (104 GiB for a 100 GB Llama-3.1-8B pool); the startup log reports
+  the pinned total.
+- A split pool has no contiguous buffer, so an L3 storage backend
+  (`--hicache-storage-backend`) is refused for it.
+- Only MHA host pools are split. MLA pools (DeepSeek), asymmetric K/V pools, and the
+  Mamba and DSA indexer buffers are still single allocations, so on XPU each must fit
+  in one.
+
 ## Decode Context Parallel (DCP) on Intel XPU [Experimental]
 
 DCP shards the KV cache across the ranks of a TP group by token position. It grows

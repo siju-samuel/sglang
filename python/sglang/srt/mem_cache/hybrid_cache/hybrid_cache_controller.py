@@ -44,7 +44,10 @@ from sglang.srt.mem_cache.hicache_storage import (
 from sglang.srt.mem_cache.l2_transfer import L2Transfer
 from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
 from sglang.srt.mem_cache.pool_host.base import uses_shared_host_layout
-from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
+from sglang.srt.mem_cache.pool_host.mha import (
+    MHATokenToKVPoolHost,
+    refuse_split_host_pool_for_storage,
+)
 from sglang.srt.mem_cache.pool_host.page_interleave import PageInterleaveHostPool
 from sglang.srt.mem_cache.pool_host.unified import UnifiedPageEnvelopeHostPool
 from sglang.srt.mem_cache.radix_cache import RadixKey
@@ -490,6 +493,8 @@ class HybridCacheController(BaseHiCacheController):
         storage_backend_extra_config: Optional[dict] = None,
         host_pools: Optional[list[PoolEntry]] = None,
     ):
+        for entry in self.mem_pool_host.entry_map.values():
+            refuse_split_host_pool_for_storage(entry.host_pool)
         if any(
             isinstance(entry.host_pool, UnifiedPageEnvelopeHostPool)
             for entry in self.mem_pool_host.entry_map.values()
@@ -555,6 +560,8 @@ class HybridCacheController(BaseHiCacheController):
         if not isinstance(self.mem_pool_host, HostPoolGroup):
             raise TypeError("Dynamic HiCache sidecars require HostPoolGroup.")
         storage_attached = self.enable_storage and self.storage_backend is not None
+        if storage_attached:
+            refuse_split_host_pool_for_storage(entry.host_pool)
         if storage_attached and getattr(self.storage_host_pool, "dcp_size", 1) > 1:
             # Sidecars added after attach (e.g. the DFLASH draft) miss the
             # attach-time DCP check.

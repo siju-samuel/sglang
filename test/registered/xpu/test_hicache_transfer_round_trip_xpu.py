@@ -21,11 +21,14 @@ load_to_device_per_layer / backup_from_device_all_layer):
 """
 
 import unittest
+from unittest import mock
 
+import psutil
 import torch
 
 from sglang.srt.mem_cache.device_pool_info import MambaStateBufferInfo
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, MLATokenToKVPool
+from sglang.srt.mem_cache.pool_host import mha as mha_host
 from sglang.srt.mem_cache.pool_host.mamba import MambaPoolHost
 from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
@@ -123,6 +126,7 @@ class TestHiCacheTransferRoundTripXpu(CustomTestCase):
         buffers = [device_pool.k_buffer[i] for i in range(LAYER_NUM)]
         buffers += [device_pool.v_buffer[i] for i in range(LAYER_NUM)]
         self._assert_round_trip(host, device_pool, buffers, io_backend)
+        return host
 
     def _mla_round_trip(self, io_backend: str, layout: str):
         device_pool = MLATokenToKVPool(
@@ -209,6 +213,105 @@ class TestHiCacheTransferRoundTripXpu(CustomTestCase):
 
     def test_mamba_direct_page_first_direct(self):
         self._mamba_round_trip("direct", "page_first_direct")
+
+    def test_mha_kernel_layer_first_split_host_buffer(self):
+        # A pool above one XPU pinned allocation is carved per layer from chunks.
+        # A 400 KB cap holds two of these ~136 KB layers per chunk, so chunk
+        # boundaries fall inside both the K and the V layer lists.
+        with mock.patch.object(
+            mha_host, "_xpu_pinned_chunk_bytes", return_value=400_000
+        ):
+            host = self._mha_round_trip("kernel", "layer_first")
+        self.assertTrue(host.split_across_allocations)
+        storages = [
+            t.untyped_storage().data_ptr() for t in host.k_buffer + host.v_buffer
+        ]
+        self.assertGreaterEqual(len(set(storages)), 3)
+        self.assertNotEqual(storages[0], storages[LAYER_NUM - 1])
+
+    @unittest.skipUnless(
+        psutil.virtual_memory().available > 36 << 30,
+        "needs ~18 GiB of pinnable host memory with headroom",
+    )
+    def test_mha_kernel_layer_first_split_above_16gib(self):
+        # Real chunking: 8 layers x (K, V) of ~1.06 GiB is ~17 GiB of host KV,
+        # more than one pinned XPU allocation; it pins 16 + 2 GiB.
+        layer_num, head_num, head_dim = 8, 8, 128
+        host_tokens = 557056
+        device_pool = MHATokenToKVPool(
+            size=POOL_TOKENS,
+            page_size=PAGE_SIZE,
+            dtype=DTYPE,
+            head_num=head_num,
+            head_dim=head_dim,
+            layer_num=layer_num,
+            device=DEVICE,
+            enable_memory_saver=False,
+            enable_alt_stream=False,
+        )
+        host = MHATokenToKVPoolHost(
+            buffer_info=device_pool.get_device_pool_infos()[0].buffer_info,
+            host_to_device_ratio=2.0,
+            host_size=host_tokens * 2 * layer_num * head_num * head_dim * 2 / 1e9,
+            page_size=PAGE_SIZE,
+            layout="layer_first",
+            device_capacity_tokens=device_pool.size,
+            start_layer=device_pool.start_layer,
+            end_layer=device_pool.end_layer,
+            write_back_staging=device_pool.hicache_write_back_staging,
+        )
+        self.assertTrue(host.split_across_allocations)
+        chunks = {t.untyped_storage().data_ptr() for t in host.k_buffer + host.v_buffer}
+        self.assertGreater(len(chunks), 1)
+        buffers = [device_pool.k_buffer[i] for i in range(layer_num)]
+        buffers += [device_pool.v_buffer[i] for i in range(layer_num)]
+        reference = _fill_random(buffers)
+        n = PAGE_SIZE * (NUM_PAGES - 1)
+        device_indices = torch.arange(n, dtype=torch.int64, device=DEVICE)
+        # Land at the far end of each host layer, past 1 GiB into it.
+        host_indices = torch.arange(
+            host.size - n, host.size, dtype=torch.int64, device=DEVICE
+        )
+        host.backup_from_device_all_layer(
+            device_pool, host_indices, device_indices, "kernel"
+        )
+        torch.xpu.synchronize()
+        for buf in buffers:
+            buf.zero_()
+        for layer_id in range(layer_num):
+            host.load_to_device_per_layer(
+                device_pool, host_indices, device_indices, layer_id, "kernel"
+            )
+        torch.xpu.synchronize()
+        for i, (got, want) in enumerate(zip(buffers, reference)):
+            self.assertTrue(torch.equal(got[:n], want[:n]), f"buffer {i} changed")
+
+    def test_mha_page_first_above_16gib_names_the_layout(self):
+        # Only layer_first can be split; other layouts must say so, not fail a
+        # power-of-two pinned allocation.
+        device_pool = MHATokenToKVPool(
+            size=POOL_TOKENS,
+            page_size=PAGE_SIZE,
+            dtype=DTYPE,
+            head_num=8,
+            head_dim=128,
+            layer_num=8,
+            device=DEVICE,
+            enable_memory_saver=False,
+            enable_alt_stream=False,
+        )
+        with self.assertRaisesRegex(ValueError, "layer_first"):
+            MHATokenToKVPoolHost(
+                buffer_info=device_pool.get_device_pool_infos()[0].buffer_info,
+                host_to_device_ratio=2.0,
+                host_size=18,
+                page_size=PAGE_SIZE,
+                layout="page_first",
+                device_capacity_tokens=device_pool.size,
+                start_layer=device_pool.start_layer,
+                end_layer=device_pool.end_layer,
+                write_back_staging=device_pool.hicache_write_back_staging,
+            )
 
     def test_mamba_kernel_page_first_mtp_draft(self):
         # Draft layers are separate allocations; backup stacks them for the XPU op.

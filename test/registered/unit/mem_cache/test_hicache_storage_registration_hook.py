@@ -36,6 +36,7 @@ from sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller import (
     HybridCacheController,
 )
 from sglang.srt.mem_cache.pool_host import HostPoolGroup, PoolEntry
+from sglang.srt.mem_cache.pool_host.mha import MHATokenToKVPoolHost
 from sglang.srt.mem_cache.storage import StorageBackendFactory
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
@@ -285,6 +286,54 @@ class TestRegistrationBurstOrder(CustomTestCase):
             order,
             ["v1", "threads", "v2:kv", "v2:mamba", "complete", "v2:swa"],
         )
+
+
+def _split_host_pool() -> MHATokenToKVPoolHost:
+    """An XPU host pool carved from several pinned chunks, without allocating."""
+    pool = MHATokenToKVPoolHost.__new__(MHATokenToKVPoolHost)
+    pool.__dict__.update(vars(_fake_pool("split")))
+    pool.split_across_allocations = True
+    return pool
+
+
+class TestSplitHostPoolIsRefused(CustomTestCase):
+    """A split pool has no contiguous buffer, so no backend may register it."""
+
+    def test_hybrid_attach_refuses_a_split_side_pool_before_registering(self):
+        order: List[str] = []
+        group = HostPoolGroup(
+            [
+                _entry(PoolName.KV, _fake_pool("kv"), is_anchor=True),
+                _entry(PoolName.SWA, _split_host_pool()),
+            ]
+        )
+        controller = _controller(
+            HybridCacheController, group.anchor_entry.host_pool, group
+        )
+        with self.assertRaisesRegex(ValueError, "split across pinned allocations"):
+            _attach(controller, RecordingBackend(order), order, group.entries)
+        self.assertEqual(order, [])
+
+    def test_base_attach_refuses_a_split_anchor(self):
+        order: List[str] = []
+        pool = _split_host_pool()
+        controller = _controller(HiCacheController, pool, pool)
+        with self.assertRaisesRegex(ValueError, "split across pinned allocations"):
+            _attach(controller, RecordingBackend(order), order)
+        self.assertEqual(order, [])
+
+    def test_split_sidecar_added_after_attach_is_refused(self):
+        order: List[str] = []
+        group = _group()
+        controller = _controller(
+            HybridCacheController, group.anchor_entry.host_pool, group
+        )
+        _attach(controller, RecordingBackend(order), order, host_pools=group.entries)
+        with self.assertRaisesRegex(ValueError, "split across pinned allocations"):
+            controller.register_host_pool_entry(
+                _entry(PoolName.SWA, _split_host_pool())
+            )
+        self.assertEqual(order, ["v1", "threads", "v2:kv", "v2:mamba", "complete"])
 
 
 class TestNativeHashPrecondition(CustomTestCase):
